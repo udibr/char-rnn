@@ -5,7 +5,7 @@
 local CharSplitLMMinibatchLoader = {}
 CharSplitLMMinibatchLoader.__index = CharSplitLMMinibatchLoader
 
-function CharSplitLMMinibatchLoader.create(data_dir, batch_size, seq_length, split_fractions)
+function CharSplitLMMinibatchLoader.create(data_dir, batch_size, seq_length, split_fractions, vocab)
     -- split_fractions is e.g. {0.9, 0.05, 0.05}
 
     local self = {}
@@ -35,7 +35,7 @@ function CharSplitLMMinibatchLoader.create(data_dir, batch_size, seq_length, spl
     if run_prepro then
         -- construct a tensor with all the data, and vocab file
         print('one-time setup: preprocessing input text file ' .. input_file .. '...')
-        CharSplitLMMinibatchLoader.text_to_tensor(input_file, vocab_file, tensor_file)
+        CharSplitLMMinibatchLoader.text_to_tensor(input_file, vocab_file, tensor_file, vocab)
     end
 
     print('loading data files...')
@@ -123,7 +123,7 @@ function CharSplitLMMinibatchLoader:next_batch(split_index)
 end
 
 -- *** STATIC method ***
-function CharSplitLMMinibatchLoader.text_to_tensor(in_textfile, out_vocabfile, out_tensorfile)
+function CharSplitLMMinibatchLoader.text_to_tensor(in_textfile, out_vocabfile, out_tensorfile, vocab)
     local timer = torch.Timer()
 
     print('loading text file...')
@@ -132,6 +132,7 @@ function CharSplitLMMinibatchLoader.text_to_tensor(in_textfile, out_vocabfile, o
     local tot_len = 0
     local f = assert(io.open(in_textfile, "r"))
 
+    local vocab_mapping = {}
     -- create vocabulary if it doesn't exist yet
     print('creating vocabulary mapping...')
     -- record all characters to a set
@@ -150,9 +151,12 @@ function CharSplitLMMinibatchLoader.text_to_tensor(in_textfile, out_vocabfile, o
     for char in pairs(unordered) do ordered[#ordered + 1] = char end
     table.sort(ordered)
     -- invert `ordered` to create the char->int mapping
-    local vocab_mapping = {}
+    vocab_mapping = {}
     for i, char in ipairs(ordered) do
         vocab_mapping[char] = i
+    end
+    if vocab then
+        vocab_mapping = vocab
     end
     -- construct a tensor with all the data
     print('putting data into tensor...')
@@ -162,7 +166,10 @@ function CharSplitLMMinibatchLoader.text_to_tensor(in_textfile, out_vocabfile, o
     rawdata = f:read(cache_len)
     repeat
         for i=1, #rawdata do
-            data[currlen+i] = vocab_mapping[rawdata:sub(i, i)] -- lua has no string indexing using []
+            c = rawdata:sub(i, i)
+            v = vocab_mapping[c] -- lua has no string indexing using []
+            assert(v, 'char "' .. c .. ' not in dictionary')
+            data[currlen+i] = v
         end
         currlen = currlen + #rawdata
         rawdata = f:read(cache_len)

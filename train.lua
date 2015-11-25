@@ -107,34 +107,17 @@ if opt.gpuid >= 0 and opt.opencl == 1 then
     end
 end
 
--- create the data loader class
-local loader = CharSplitLMMinibatchLoader.create(opt.data_dir, opt.batch_size, opt.seq_length, split_sizes)
-local vocab_size = loader.vocab_size  -- the number of distinct characters
-local vocab = loader.vocab_mapping
-print('vocab size: ' .. vocab_size)
 -- make sure output directory exists
 if not path.exists(opt.checkpoint_dir) then lfs.mkdir(opt.checkpoint_dir) end
 
 -- define the model: prototypes for one timestep, then clone them in time
 local do_random_init = true
+local vocab
 if string.len(opt.init_from) > 0 then
     print('loading a model from checkpoint ' .. opt.init_from)
     local checkpoint = torch.load(opt.init_from)
     protos = checkpoint.protos
-    -- make sure the vocabs are the same
-    local vocab_compatible = true
-    local checkpoint_vocab_size = 0
-    for c,i in pairs(checkpoint.vocab) do
-        if not (vocab[c] == i) then
-            vocab_compatible = false
-        end
-        checkpoint_vocab_size = checkpoint_vocab_size + 1
-    end
-    if not (checkpoint_vocab_size == vocab_size) then
-        vocab_compatible = false
-        print('checkpoint_vocab_size: ' .. checkpoint_vocab_size)
-    end
-    assert(vocab_compatible, 'error, the character vocabulary for this dataset and the one in the saved checkpoint are not the same. This is trouble.')
+    vocab = checkpoint.vocab
     -- overwrite model settings based on checkpoint to ensure compatibility
     print('overwriting rnn_size=' .. checkpoint.opt.rnn_size .. ', num_layers=' .. checkpoint.opt.num_layers .. ', model=' .. checkpoint.opt.model .. ' based on the checkpoint.')
     opt.rnn_size = checkpoint.opt.rnn_size
@@ -153,6 +136,13 @@ else
     end
     protos.criterion = nn.ClassNLLCriterion()
 end
+
+-- create the data loader class
+local loader = CharSplitLMMinibatchLoader.create(opt.data_dir, opt.batch_size, opt.seq_length, split_sizes, vocab)
+local vocab_size = loader.vocab_size  -- the number of distinct characters
+vocab = loader.vocab_mapping
+print('vocab size: ' .. vocab_size)
+
 
 -- the initial state of the cell/hidden states
 init_state = {}
@@ -229,6 +219,7 @@ function eval_split(split_index, max_batches)
     local rnn_state = {[0] = init_state}
     
     for i = 1,n do -- iterate over batches in the split
+        local batch_loss = 0
         -- fetch a batch
         local x, y = loader:next_batch(split_index)
         x,y = prepro(x,y)
@@ -238,12 +229,13 @@ function eval_split(split_index, max_batches)
             local lst = clones.rnn[t]:forward{x[t], unpack(rnn_state[t-1])}
             rnn_state[t] = {}
             for i=1,#init_state do table.insert(rnn_state[t], lst[i]) end
-            prediction = lst[#lst] 
-            loss = loss + clones.criterion[t]:forward(prediction, y[t])
+            prediction = lst[#lst]
+            batch_loss = batch_loss + clones.criterion[t]:forward(prediction, y[t])
         end
         -- carry over lstm state
         rnn_state[0] = rnn_state[#rnn_state]
-        print(i .. '/' .. n .. '...')
+        print(i .. '/' .. n .. '...' .. batch_loss / opt.seq_length)
+        loss = loss + batch_loss
     end
 
     loss = loss / opt.seq_length / n
@@ -307,6 +299,9 @@ local optim_state = {learningRate = opt.learning_rate, alpha = opt.decay_rate}
 local iterations = opt.max_epochs * loader.ntrain
 local iterations_per_epoch = loader.ntrain
 local loss0 = nil
+if iterations == 0 then
+    eval_split(2)
+end
 for i = 1, iterations do
     local epoch = i / loader.ntrain
 
